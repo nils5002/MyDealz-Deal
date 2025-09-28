@@ -1,0 +1,15 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+
+# Local environment
+.env
+state.json
+
+# Virtual environments
+.venv/
+venv/
+
+# Editor settings
+.idea/
+.vscode/
