@@ -1,6 +1,6 @@
 # MyDealz Kommentar-Bild-Monitor
 
-Dieses Tool ueberwacht einen MyDealz-Deal auf neue Kommentare und sendet gefundene Bilder per Telegram weiter.
+Dieses Tool ueberwacht einen MyDealz-Deal auf neue Kommentare und schickt dir jeden neuen Beitrag (Text und Bilder) per Telegram.
 
 ## Voraussetzungen
 - Python 3.10+
@@ -22,7 +22,7 @@ Dieses Tool ueberwacht einen MyDealz-Deal auf neue Kommentare und sendet gefunde
    python mydealz_monitor.py
    ```
 
-Die Datei `state.json` speichert gesehene Kommentare. Loeschen, falls du alles neu einsammeln willst.
+Die Datei `state.json` speichert gesehene Kommentare. Beim Start schickt der Bot dir vorsorglich den zuletzt gefundenen Kommentar als Funktionstest. Loeschen, falls du alles neu einsammeln willst.
 
 ## Betrieb mit Docker oder Portainer
 1. `.env.example` nach `.env` kopieren und anpassen (nie ins Repo pushen!).

@@ -3,7 +3,7 @@
 MyDealz Comment Image Monitor
 -----------------------------
 Monitors a specific MyDealz (pepper.com platform) deal thread for new comments
-and sends any newly posted images from comments to a Telegram chat.
+and sends any newly posted comments (text and images) to a Telegram chat.
 
 Setup:
   1) pip install -r requirements.txt
@@ -234,9 +234,12 @@ def build_comment_message(comment, title="Neuer Kommentar"):
         f"<a href=\"{html.escape(anchor)}\">Zum Kommentar</a>",
     ]
     text = comment.get("text", "").strip()
+    lines.append("")
     if text:
-        lines.append("")
+        lines.append("<b>Kommentar:</b>")
         lines.append(html.escape(text))
+    else:
+        lines.append("<i>Kein Text im Kommentar</i>")
     return "\n".join(lines)
 
 
@@ -248,10 +251,13 @@ def build_comment_image_caption(comment, idx, total, title):
         f"<a href=\"{html.escape(build_comment_link(comment['id']))}\">Zum Kommentar</a>",
     ]
     text = comment.get("text", "").strip()
+    lines.append("")
     if text:
         snippet = trim_text(html.escape(text), 900)
-        lines.append("")
+        lines.append("<b>Kommentar:</b>")
         lines.append(snippet)
+    else:
+        lines.append("<i>Kein Text im Kommentar</i>")
     if total > 1:
         lines.append(f"Bild {idx}/{total}")
     caption = "\n".join(lines)
