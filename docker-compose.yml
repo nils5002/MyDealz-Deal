@@ -1,18 +1,17 @@
 services:
   mydealz-monitor:
-    image: python:3.11-slim
-    working_dir: /app
-    volumes:
-      - ./:/app
-      # optional: persistenter State
-      - mydealz_state:/app/MyDealz-Deal
-    command: python MyDealz-Deal/mydealz_monitor.py
-    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mydealz-monitor
     environment:
       DEAL_URL: ${DEAL_URL}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
       POLL_SECONDS: ${POLL_SECONDS:-60}
+    volumes:
+      - mydealz_state:/app/MyDealz-Deal
+    restart: unless-stopped
 
 volumes:
   mydealz_state:
