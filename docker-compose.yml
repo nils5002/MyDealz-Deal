@@ -1,0 +1,12 @@
+services:
+  mydealz-monitor:
+    build: .
+    container_name: mydealz-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STATE_PATH: /data/state.json
+      # POLL_SECONDS: "60"  # Optional override without editing .env
+    volumes:
+      - ./data:/data

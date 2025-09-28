@@ -1,0 +1,9 @@
+__pycache__/
+.env
+state.json
+*.pyc
+*.pyo
+.dockerignore
+.git
+.gitignore
+*__pycache__*
