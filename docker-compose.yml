@@ -1,12 +1,18 @@
 services:
   mydealz-monitor:
-    build: .
-    container_name: mydealz-monitor
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      STATE_PATH: /data/state.json
-      # POLL_SECONDS: "60"  # Optional override without editing .env
+    image: python:3.11-slim
+    working_dir: /app
     volumes:
-      - ./data:/data
+      - ./:/app
+      # optional: persistenter State
+      - mydealz_state:/app/MyDealz-Deal
+    command: python MyDealz-Deal/mydealz_monitor.py
+    restart: unless-stopped
+    environment:
+      DEAL_URL: ${DEAL_URL}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      POLL_SECONDS: ${POLL_SECONDS:-60}
+
+volumes:
+  mydealz_state:
