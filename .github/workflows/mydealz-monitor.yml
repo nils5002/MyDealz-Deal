@@ -1,0 +1,83 @@
+name: MyDealz Monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      poll_seconds:
+        description: "Optional override for poll interval (seconds)"
+        required: false
+        default: "60"
+      runtime_minutes:
+        description: "Optional override for runtime limit (minutes)"
+        required: false
+        default: "25"
+  schedule:
+    - cron: "*/30 * * * *"
+  push:
+    paths:
+      - '.github/workflows/mydealz-monitor.yml'
+      - 'MyDealz-Deal/**'
+
+concurrency:
+  group: mydealz-monitor
+  cancel-in-progress: true
+
+jobs:
+  run-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DEAL_URL: ${{ secrets.DEAL_URL }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      POLL_SECONDS: ${{ github.event.inputs.poll_seconds || secrets.POLL_SECONDS || '60' }}
+      STATE_PATH: MyDealz-Deal/state.json
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore monitor state cache
+        uses: actions/cache@v4
+        with:
+          path: MyDealz-Deal/state.json
+          key: mydealz-monitor-${{ runner.os }}-${{ github.run_number }}
+          restore-keys: |
+            mydealz-monitor-${{ runner.os }}-
+            mydealz-monitor-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r MyDealz-Deal/requirements.txt
+
+      - name: Ensure state file exists
+        run: |
+          mkdir -p MyDealz-Deal
+          if [ ! -f MyDealz-Deal/state.json ]; then
+            echo '{"seen_comment_ids": []}' > MyDealz-Deal/state.json
+          fi
+
+      - name: Run monitor
+        env:
+          RUNTIME_MINUTES: ${{ github.event.inputs.runtime_minutes || '25' }}
+        run: |
+          timeout "${RUNTIME_MINUTES}m" python MyDealz-Deal/mydealz_monitor.py
+
+      - name: Upload state snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mydealz-monitor-state
+          path: MyDealz-Deal/state.json
+          if-no-files-found: error
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mydealz-monitor-logs
+          path: /home/runner/work/_temp/_runner_file_commands/**
+          if-no-files-found: ignore
