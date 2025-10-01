@@ -1,4 +1,4 @@
-# MyDealz Kommentar-Bild-Monitor
+#MyDealz Kommentar-Bild-Monitor
 
 Dieses Tool ueberwacht einen MyDealz-Deal auf neue Kommentare und schickt dir jeden neuen Beitrag (Text und Bilder) per Telegram.
 
