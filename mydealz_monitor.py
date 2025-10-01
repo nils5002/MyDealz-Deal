@@ -273,15 +273,32 @@ def normalize_comment_item(item: dict) -> dict:
 
 def fetch_recent_comments(page: int = 1, limit: Optional[int] = None) -> list[dict]:
     limit = limit or GRAPHQL_PAGE_LIMIT
-    variables = {"threadId": THREAD_ID, "page": page, "limit": limit}
-    data = graphql_query(GRAPHQL_COMMENTS_QUERY, variables, operation_name="Comments")
-    items = ((data.get("comments") or {}).get("items")) or []
-    normalized = {}
-    for raw in items:
-        comment = normalize_comment_item(raw)
-        if comment.get("id"):
-            normalized[comment["id"]] = comment
-    return sorted(normalized.values(), key=comment_sort_key)
+
+    comments: list[dict] = []
+    try:
+        html = fetch_comments_html(BASE_DEAL_URL)
+        comments = extract_comments(html)
+    except Exception as exc:
+        logging.warning("HTML comment scrape failed: %s", exc)
+
+    if not comments:
+        try:
+            variables = {"threadId": THREAD_ID, "page": page, "limit": limit}
+            data = graphql_query(GRAPHQL_COMMENTS_QUERY, variables, operation_name="Comments")
+            items = ((data.get("comments") or {}).get("items")) or []
+            normalized = {}
+            for raw in items:
+                comment = normalize_comment_item(raw)
+                if comment.get("id"):
+                    normalized[comment["id"]] = comment
+            comments = sorted(normalized.values(), key=comment_sort_key)
+        except Exception as exc:
+            logging.warning("GraphQL comment fetch failed: %s", exc)
+            comments = []
+
+    if limit and comments:
+        comments = comments[-limit:]
+    return comments
 
 
 def trim_text(text, limit):
