@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 from typing import Optional
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -377,6 +377,22 @@ def extract_comments_from_preloaded_state(html_text):
     return comments
 
 
+def find_comment_id(element: Tag) -> str:
+    current: Optional[Tag] = element if isinstance(element, Tag) else None
+    for _ in range(6):
+        if current is None:
+            break
+        cid = current.get("data-comment-id") or current.get("data-id")
+        if cid:
+            return str(cid)
+        elem_id = current.get("id") or ""
+        if elem_id.startswith("comment-"):
+            return elem_id.split("comment-")[-1]
+        parent = current.parent
+        current = parent if isinstance(parent, Tag) else None
+    return ""
+
+
 def extract_comments(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
     comments = extract_comments_from_dom(soup)
@@ -486,84 +502,95 @@ def send_telegram_message(text):
     return r.ok
 
 def extract_comments_from_dom(soup):
-    """
-    Return list of dicts: {id, author, text, images[], timestamp}
-    Pepper-based sites usually render comments in <article data-comment-id="..."> or similar.
-    We'll try multiple selectors for robustness.
-    """
+    """Extract comment entries from the rendered DOM, including comment-padding blocks."""
     comments = []
-    # Try likely containers
     candidates = []
     candidates.extend(soup.select("article[data-comment-id]"))
-    if not candidates:
-        candidates.extend(soup.select("[data-comment-id]"))
-    if not candidates:
-        # Fallback: generic comment blocks
-        candidates.extend(soup.select("div.comment, li.comment"))
+    candidates.extend(soup.select("div.comment-padding"))
+    candidates.extend(soup.select("li.commentList-item[data-id]"))
+    candidates.extend(soup.select("div.commentList-comment[data-t]"))
+
+    seen_ids: set[str] = set()
 
     for el in candidates:
-        cid = el.get("data-comment-id") or el.get("id")
-        if not cid:
-            # Some have id like 'comment-12345678'
-            elem_id = el.get("id", "")
-            if elem_id.startswith("comment-"):
-                cid = elem_id.split("comment-")[-1]
-        if not cid:
-            continue  # skip if we can't identify uniquely
+        if not isinstance(el, Tag):
+            continue
+        cid = find_comment_id(el)
+        if not cid or cid in seen_ids:
+            continue
+        seen_ids.add(cid)
 
-        # Author
+        content_root: Tag = el
+        if "comment-padding" not in (content_root.get("class") or []):
+            padding = content_root.select_one("div.comment-padding")
+            if isinstance(padding, Tag):
+                content_root = padding
+        if content_root.name != "article":
+            article_node = content_root.select_one("article")
+            if isinstance(article_node, Tag):
+                content_root = article_node
+
+        article = content_root
+
+        # Author lookup within the comment block
         author = ""
-        a1 = el.select_one(".user", ".user-name")
-        if a1 and a1.get_text(strip=True):
-            author = a1.get_text(strip=True)
-        else:
-            # Another common pepper selector:
-            a2 = el.select_one("[data-user-name]")
-            if a2:
-                author = a2.get("data-user-name", "") or a2.get_text(strip=True)
+        for selector in (".user", ".user-name", "[data-user-name]", ".comment-header a"):
+            node = article.select_one(selector)
+            if not node:
+                continue
+            candidate = node.get("data-user-name") or node.get_text(strip=True)
+            if candidate:
+                author = candidate.strip()
+                break
 
-        # Text content
-        body = el.select_one(".comment__body") or el
-        text = ""
-        tb = body.select_one(".content, .text, .comment-body, .comment-content")
-        if tb:
-            text = tb.get_text(" ", strip=True)
-        else:
-            text = body.get_text(" ", strip=True)
+        # Comment text
+        text_value = ""
+        for selector in (
+            ".comment__body",
+            ".comment-body",
+            ".comment-content",
+            ".comment-body__content",
+            ".commentList-body",
+        ):
+            node = article.select_one(selector)
+            if node:
+                text_value = node.get_text(" ", strip=True)
+                if text_value:
+                    break
+        if not text_value:
+            text_value = article.get_text(" ", strip=True)
 
-        # Timestamp (best-effort)
-        ts = ""
-        tsel = el.select_one("time[datetime]") or el.select_one("time")
-        if tsel:
-            ts = tsel.get("datetime") or tsel.get_text(strip=True)
+        # Timestamp
+        timestamp = ""
+        time_node = article.select_one("time[datetime]") or article.select_one("time")
+        if time_node:
+            timestamp = time_node.get("datetime") or time_node.get_text(strip=True)
 
-        # Images
-        images = []
-        # <img> tags (src or data-src / data-lazy / srcset first url)
-        for img in el.find_all("img"):
+        # Images within the comment body
+        images: list[str] = []
+        for img in article.find_all("img"):
             src = img.get("src") or img.get("data-src") or img.get("data-lazy") or ""
             if not src and img.get("srcset"):
-                # take first URL from srcset
                 srcset = img.get("srcset", "")
                 first = srcset.split(",")[0].strip().split(" ")[0]
                 src = first
             if src and IMAGE_EXT_RE.search(src):
                 images.append(urljoin(DEAL_URL, src))
 
-        # Links to images
-        for a in el.find_all("a", href=True):
+        for a in article.find_all("a", href=True):
             href = a["href"]
             if IMAGE_EXT_RE.search(href):
                 images.append(urljoin(DEAL_URL, href))
 
-        images = list(dict.fromkeys(images))  # dedupe, preserve order
-        comments.append({
-            "id": str(cid),
-            "author": author,
-            "text": text,
-            "timestamp": ts,
-            "images": images
-        })
+        comments.append(
+            {
+                "id": str(cid),
+                "author": author,
+                "text": text_value,
+                "timestamp": timestamp,
+                "images": list(dict.fromkeys(images)),
+            }
+        )
     return comments
 
 def fetch_comments_html(url):
