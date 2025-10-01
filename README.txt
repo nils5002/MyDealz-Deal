@@ -16,13 +16,13 @@ Dieses Tool ueberwacht einen MyDealz-Deal auf neue Kommentare und schickt dir je
    - `DEAL_URL`
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
-   - optional `POLL_SECONDS`, `STARTUP_MESSAGE`, `STARTUP_IMAGE_URL`, `SEEN_LIMIT`
+   - optional `POLL_SECONDS`, `STARTUP_MESSAGE`, `STARTUP_IMAGE_URL`, `SEEN_LIMIT`, `THREAD_ID`, `GRAPHQL_PAGE_LIMIT`
 3. Skript starten:
    ```bash
    python mydealz_monitor.py
    ```
 
-Die Datei `state.json` speichert gesehene Kommentare. Beim Start schickt der Bot dir vorsorglich den zuletzt gefundenen Kommentar als Funktionstest. Loeschen, falls du alles neu einsammeln willst.
+Die Datei `state.json` speichert gesehene Kommentare. Beim Start ruft der Bot die MyDealz-GraphQL-API auf und schickt dir vorsorglich den zuletzt gefundenen Kommentar als Funktionstest. Loeschen, falls du alles neu einsammeln willst.
 
 ## Betrieb mit Docker oder Portainer
 1. `.env.example` nach `.env` kopieren und anpassen (nie ins Repo pushen!).
@@ -43,6 +43,8 @@ Die Datei `state.json` speichert gesehene Kommentare. Beim Start schickt der Bot
 - `TELEGRAM_BOT_TOKEN`: Token vom BotFather.
 - `TELEGRAM_CHAT_ID`: Empfaenger-Chat oder Kanal.
 - `STATE_PATH`: Wird im Compose-File auf `/data/state.json` gesetzt, damit der State in `./data` persistent bleibt.
+- `THREAD_ID`: Override, falls `DEAL_URL` nicht mit der numerischen Deal-ID endet (wird sonst aus der URL extrahiert).
+- `GRAPHQL_PAGE_LIMIT`: Anzahl der neuesten Kommentare, die pro Poll geladen werden (Standard 50).
 
 ## Tipps
 - Waehl eine realistische Abruffrequenz (`POLL_SECONDS`), um MyDealz nicht zu stark zu belasten.

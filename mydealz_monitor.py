@@ -29,7 +29,9 @@ import json
 import re
 import html
 import logging
-from urllib.parse import urljoin
+from datetime import datetime, timezone
+from urllib.parse import urljoin, urlparse
+from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -44,6 +46,8 @@ STATE_PATH = os.getenv("STATE_PATH", "state.json")
 STARTUP_MESSAGE = os.getenv("STARTUP_MESSAGE", "").strip()
 STARTUP_IMAGE_URL = os.getenv("STARTUP_IMAGE_URL", "").strip()
 SEEN_LIMIT = int(os.getenv("SEEN_LIMIT", "5000"))
+GRAPHQL_PAGE_LIMIT = int(os.getenv("GRAPHQL_PAGE_LIMIT", "50"))
+THREAD_ID = os.getenv("THREAD_ID", "").strip()
 
 if not DEAL_URL or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     raise SystemExit("Please set DEAL_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID in your .env")
@@ -57,12 +61,71 @@ session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
     "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Referer": DEAL_URL
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
 })
 
 IMAGE_EXT_RE = re.compile(r'\.(?:jpg|jpeg|png|gif|webp)\b', re.I)
+THREAD_ID_HTML_PATTERNS = [
+    re.compile(r'\"threadId\"\s*:\s*\"?(?P<id>\d+)\"?', re.I),
+    re.compile(r'data-thread-id=[\"\'](?P<id>\d+)[\"\']', re.I),
+]
+CANONICAL_LINK_RE = re.compile(
+    r'<link[^>]+rel=[\"\']canonical[\"\'][^>]+href=[\"\'](?P<href>[^\"\']+)[\"\']',
+    re.I,
+)
 
+def extract_thread_id_from_url(url: str) -> str:
+    if not url:
+        return ""
+    path = urlparse(url).path
+    digits = re.findall(r'(\d+)', path)
+    return digits[-1] if digits else ""
+
+def extract_thread_id_from_html(html_text: str, base_url: str) -> str:
+    candidates: list[str] = []
+    for pattern in THREAD_ID_HTML_PATTERNS:
+        matches = pattern.findall(html_text)
+        for match in matches:
+            if isinstance(match, tuple):
+                match = next((m for m in match if m), "")
+            if match:
+                candidates.append(str(match))
+    unique = list(dict.fromkeys(candidates))
+    if len(unique) == 1:
+        return unique[0]
+    canonical_match = CANONICAL_LINK_RE.search(html_text)
+    if canonical_match:
+        canonical_url = urljoin(base_url, canonical_match.group('href'))
+        return extract_thread_id_from_url(canonical_url)
+    return ""
+
+def resolve_thread_id_from_page(url: str) -> str:
+    try:
+        response = session.get(url, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logging.warning("Failed to fetch %s to resolve thread ID: %s", url, exc)
+        return ""
+    resolved = extract_thread_id_from_url(response.url)
+    if resolved:
+        return resolved
+    return extract_thread_id_from_html(response.text, url)
+
+BASE_DEAL_URL = DEAL_URL.split("#")[0]
+session.headers["Referer"] = BASE_DEAL_URL
+
+if not THREAD_ID:
+    THREAD_ID = extract_thread_id_from_url(BASE_DEAL_URL)
+
+if not THREAD_ID:
+    THREAD_ID = resolve_thread_id_from_page(BASE_DEAL_URL)
+    if THREAD_ID:
+        logging.info("Resolved thread ID via page fetch: %s", THREAD_ID)
+
+if not THREAD_ID:
+    raise SystemExit("Could not determine thread ID. Set THREAD_ID in .env or use a DEAL_URL ending with -<id>.")
+
+GRAPHQL_ENDPOINT = "https://www.mydealz.de/graphql"
 def load_state():
     state = {"seen_comment_ids": []}
     if os.path.exists(STATE_PATH):
@@ -85,6 +148,12 @@ def save_state(state):
     os.replace(tmp, STATE_PATH)
 
 def comment_sort_key(comment):
+    created_ts = comment.get("created_ts")
+    if created_ts is not None:
+        try:
+            return int(created_ts)
+        except (TypeError, ValueError):
+            pass
     cid = str(comment.get("id", ""))
     digits = re.findall(r"\d+", cid)
     if digits:
@@ -104,6 +173,115 @@ def append_seen(state, cid):
     seen.append(cid)
     if SEEN_LIMIT > 0 and len(seen) > SEEN_LIMIT:
         del seen[:-SEEN_LIMIT]
+
+
+GRAPHQL_COMMENTS_QUERY = """
+query Comments($threadId: ID!, $page: Int, $limit: Int) {
+  comments(filter: {threadId: {eq: $threadId}}, page: $page, limit: $limit) {
+    items {
+      commentId
+      content
+      createdAt
+      createdAtTs
+      user { username }
+    }
+  }
+}
+"""
+
+def ensure_xsrf_token() -> str:
+    token = session.cookies.get("xsrf_t")
+    if token:
+        return token.strip('"')
+    resp = session.get(BASE_DEAL_URL, timeout=30)
+    resp.raise_for_status()
+    token = session.cookies.get("xsrf_t")
+    if not token:
+        raise RuntimeError("Could not obtain xsrf token from MyDealz")
+    return token.strip('"')
+
+def graphql_query(query: str, variables: dict, operation_name: Optional[str] = None) -> dict:
+    token = ensure_xsrf_token()
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Referer": BASE_DEAL_URL,
+        "X-Requested-With": "XMLHttpRequest",
+        "X-XSRF-Token": token,
+    }
+    payload = {"query": query, "variables": variables}
+    if operation_name:
+        payload["operationName"] = operation_name
+    response = session.post(GRAPHQL_ENDPOINT, json=payload, headers=headers, timeout=30)
+    response.raise_for_status()
+    try:
+        data = response.json()
+    except ValueError as exc:
+        snippet = response.text[:200]
+        raise RuntimeError(f"Invalid GraphQL response: {snippet}") from exc
+    errors = data.get("errors") or []
+    if errors:
+        raise RuntimeError(f"GraphQL error: {errors}")
+    return data.get("data") or {}
+
+def parse_comment_content(html_content: str) -> tuple[str, list[str]]:
+    if not html_content:
+        return "", []
+    soup = BeautifulSoup(html_content, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    images: list[str] = []
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or img.get("data-lazy") or ""
+        if not src and img.get("srcset"):
+            first = img["srcset"].split(',')[0].strip().split(' ')[0]
+            src = first
+        if src and IMAGE_EXT_RE.search(src):
+            images.append(urljoin(DEAL_URL, src))
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+        if IMAGE_EXT_RE.search(href):
+            images.append(urljoin(DEAL_URL, href))
+    images = list(dict.fromkeys(images))
+    return text, images
+
+def normalize_comment_item(item: dict) -> dict:
+    comment_id = str(item.get("commentId") or "")
+    user = item.get("user") or {}
+    author = user.get("username") or ""
+    created_ts_raw = item.get("createdAtTs")
+    created_ts = None
+    if created_ts_raw is not None:
+        try:
+            created_ts = int(created_ts_raw)
+        except (TypeError, ValueError):
+            created_ts = None
+    timestamp = item.get("createdAt") or ""
+    if created_ts is not None:
+        try:
+            timestamp = datetime.fromtimestamp(created_ts, tz=timezone.utc).astimezone().isoformat()
+        except (OverflowError, OSError, ValueError):
+            timestamp = item.get("createdAt") or ""
+    text, images = parse_comment_content(item.get("content") or "")
+    return {
+        "id": comment_id,
+        "author": author,
+        "text": text,
+        "timestamp": timestamp,
+        "images": images,
+        "created_ts": created_ts,
+    }
+
+def fetch_recent_comments(page: int = 1, limit: Optional[int] = None) -> list[dict]:
+    limit = limit or GRAPHQL_PAGE_LIMIT
+    variables = {"threadId": THREAD_ID, "page": page, "limit": limit}
+    data = graphql_query(GRAPHQL_COMMENTS_QUERY, variables, operation_name="Comments")
+    items = ((data.get("comments") or {}).get("items")) or []
+    normalized = {}
+    for raw in items:
+        comment = normalize_comment_item(raw)
+        if comment.get("id"):
+            normalized[comment["id"]] = comment
+    return sorted(normalized.values(), key=comment_sort_key)
 
 
 def trim_text(text, limit):
@@ -411,8 +589,7 @@ def send_startup_notification(state):
             logging.warning("Startup image failed to send.")
 
     try:
-        html_text = fetch_comments_html(DEAL_URL)
-        comments = extract_comments(html_text)
+        comments = fetch_recent_comments(limit=GRAPHQL_PAGE_LIMIT)
     except Exception as exc:
         logging.warning("Could not fetch latest comment for startup: %s", exc)
         return []
@@ -433,11 +610,10 @@ def run_once(state, preloaded_comments=None):
     if preloaded_comments is not None:
         comments = preloaded_comments
     else:
-        html_text = fetch_comments_html(DEAL_URL)
-        comments = extract_comments(html_text)
+        comments = fetch_recent_comments(limit=GRAPHQL_PAGE_LIMIT)
 
     if not comments:
-        logging.info("No comments found (yet). The page might be loading comments via JS.")
+        logging.info("No comments found (yet).")
         return
 
     seen = state.setdefault("seen_comment_ids", [])
